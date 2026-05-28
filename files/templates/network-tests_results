@@ -1,0 +1,9 @@
+Hi ${SMTP_TO_NAME},
+
+This is an automated email that has the network-tests results for the month
+of ${MONTH} of year ${YEAR} attached to it.
+
+Cordially,
+
+The network-tests programs.
+https://github.com/juanluisbaptiste/network-tests

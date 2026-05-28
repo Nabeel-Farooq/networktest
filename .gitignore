@@ -1,0 +1,13 @@
+*.pyc
+*.csv
+*.bin
+*.zip
+*.egg*info
+csv
+dist
+build
+doc-pak
+description-pak
+.env
+files/templates/ctec-mintic
+test_results/

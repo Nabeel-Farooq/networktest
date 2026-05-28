@@ -1,0 +1,29 @@
+version: '2'
+services:
+  tests:
+      build: .
+      image: juanluisbaptiste/network-tests
+      container_name: network-tests
+      volumes:
+        - $PWD:/code
+        - $PWD/test_results:/test_results
+        - $PWD/files/templates:/templates
+        - '/etc/localtime:/etc/localtime:ro'
+      env_file: .env
+      links:
+      - postfix
+      # external_links:
+      # - ctecsas-base/postfix:postfix
+      # env_file:
+      command: bash
+      tty: true
+      stdin_open: true
+      cap_add:
+        - NET_ADMIN
+  postfix:
+    image: juanluisbaptiste/postfix:latest
+    expose:
+      - '25'
+    # See juanluisbaptiste/postfix github page for the contents
+    # and an explanation of credentials-smtp.
+    env_file: ../credentials-smtp.env
