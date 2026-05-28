@@ -39,7 +39,7 @@ Script for doing upload speed tests and optionally save results on a csv file.
 
 ## Installation
 
-    git clone https://github.com/juanluisbaptiste/network-tests.git
+    git clone https://github.com/Nabeel-Farooq/networktest
     cd network-tests
     sudo python setup.py install
 
