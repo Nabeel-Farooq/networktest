@@ -1,51 +1,87 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-. /functions.sh
+set -euo pipefail
 
-#Default test results directory
-mkdir -p ${TESTS_RESULTS_DIR}
-rm -fr ${TMP_RESULTS_DIR}
-mkdir -p ${TMP_RESULTS_DIR}
+# Load helper functions
+# shellcheck source=/functions.sh
+source /functions.sh
 
-# If enabled, start throttle
-if [ "${THROTTLE_ENABLE}" == "yes" ]; then
-  echo ""
+# Create results directories
+mkdir -p "${TESTS_RESULTS_DIR}"
+
+rm -rf "${TMP_RESULTS_DIR}"
+mkdir -p "${TMP_RESULTS_DIR}"
+
+log_section() {
+  echo -e "\n* $1...\n"
+}
+
+require_var() {
+  local var_name="$1"
+
+  if [[ -z "${!var_name:-}" ]]; then
+    echo "ERROR: ${var_name} not set."
+    exit 1
+  fi
+}
+
+cleanup() {
+  if [[ "${THROTTLE_ENABLE:-no}" == "yes" ]]; then
+    if ! throttle --stop; then
+      echo "ERROR: Cannot stop throttle."
+      exit 1
+    fi
+  fi
+}
+
+trap cleanup EXIT
+
+# Enable throttle
+if [[ "${THROTTLE_ENABLE:-no}" == "yes" ]]; then
+  echo
   enable_throttle
-  echo ""
+  echo
 fi
 
-if [ "${DOWNLOAD_TEST_ENABLE}" == "yes"  ]; then
-  echo -e "\n* Starting download tests...\n"
+# Download tests
+if [[ "${DOWNLOAD_TEST_ENABLE:-no}" == "yes" ]]; then
+  log_section "Starting download tests"
+
   do_download_test
-  echo -e "\n* Done.\n"
+
+  log_section "Download tests completed"
 fi
 
-if [ "${UPLOAD_TEST_ENABLE}" == "yes"  ]; then
-  [[ -z ${UPLOAD_TEST_FILE} ]] && echo "ERROR: UPLOAD_TEST_FILE not set.\n" && exit 1
-  [[ -z ${UPLOAD_TEST_HOST} ]] && echo "ERROR: UPLOAD_TEST_HOST not set.\n" && exit 1
-  [[ -z ${UPLOAD_TEST_USER} ]] && echo "ERROR: UPLOAD_TEST_USER not set.\n" && exit 1
-  [[ -z ${UPLOAD_TEST_PASSWORD} ]] && echo "ERROR: UPLOAD_TEST_PASSWORD not set.\n" && exit 1
-  echo -e "\n* Starting upload tests...\n"
+# Upload tests
+if [[ "${UPLOAD_TEST_ENABLE:-no}" == "yes" ]]; then
+
+  require_var "UPLOAD_TEST_FILE"
+  require_var "UPLOAD_TEST_HOST"
+  require_var "UPLOAD_TEST_USER"
+  require_var "UPLOAD_TEST_PASSWORD"
+
+  log_section "Starting upload tests"
+
   do_upload_test
-  echo -e "\n* Done.\n"
+
+  log_section "Upload tests completed"
 fi
 
-if [ "${PING_TEST_ENABLE}" == "yes"  ]; then
-  echo -e "\n* Starting ping tests...\n"
+# Ping tests
+if [[ "${PING_TEST_ENABLE:-no}" == "yes" ]]; then
+  log_section "Starting ping tests"
+
   do_ping_test
-  echo -e "\n* Done.\n"
+
+  log_section "Ping tests completed"
 fi
 
-# Stop throttle
-if [ "${THROTTLE_ENABLE}" == "yes" ]; then
-  throttle --stop
-  [[ $? -gt 0 ]] && echo "ERROR: Cannot stop throttle." && exit 1
-fi
-
-if [ "${COMPRESS_RESULTS}" == "yes" ]; then
+# Compress results
+if [[ "${COMPRESS_RESULTS:-no}" == "yes" ]]; then
   compress_results
 fi
 
-if [ "${SEND_RESULTS_EMAIL}" == "yes" ]; then
+# Email results
+if [[ "${SEND_RESULTS_EMAIL:-no}" == "yes" ]]; then
   email_results
 fi
