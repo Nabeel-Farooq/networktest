@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-# encoding: utf-8
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
 
 import argparse
-import os
 import signal
 import statistics
 import sys
 import time
 from pathlib import Path
+from typing import Callable
 
 import common
 import csv_parser
@@ -19,269 +21,338 @@ except ImportError:
     from importlib_metadata import version as get_version
 
 
-tester = uploadtester.UploadTester()
-
 try:
     VERSION = get_version("network-tests")
 except Exception:
     VERSION = "dev"
 
 
-def parse_option():
+# ----------------------------------------------------------------------
+# Utilities
+# ----------------------------------------------------------------------
+
+
+def get_verbose_printer(enabled: bool) -> Callable:
+    """Return print function or no-op."""
+
+    return print if enabled else lambda *args, **kwargs: None
+
+
+def format_speed(speed: float) -> str:
+    """
+    Format speed value.
+
+    Args:
+        speed: Bytes per second.
+
+    Returns:
+        Formatted string.
+    """
+
+    mb_s = speed * common.SPEED_MB_SEC
+    mbps = speed * common.SPEED_MBIT_SEC
+
+    return f"{mb_s:.2f} MB/s - {mbps:.2f} Mbps"
+
+
+def get_file_size_mb(file_path: Path) -> float:
+    """Return file size in MB."""
+
+    return round(
+        file_path.stat().st_size / (1024 * 1024),
+        2,
+    )
+
+
+# ----------------------------------------------------------------------
+# CLI
+# ----------------------------------------------------------------------
+
+
+def parse_args() -> argparse.Namespace:
     """Parse command line arguments."""
 
-    parser = argparse.ArgumentParser()
+    default_count = uploadtester.UploadTester.DEFAULT_UPLOAD_COUNT
+
+    parser = argparse.ArgumentParser(
+        description="FTP Upload Speed Tester"
+    )
 
     parser.add_argument(
         "-c",
         "--count",
         type=int,
-        default=tester.DEFAULT_UPLOAD_COUNT,
-        help=(
-            "Number of uploads to do. "
-            f"Default: {tester.DEFAULT_UPLOAD_COUNT}"
-        ),
+        default=default_count,
+        help=f"Number of upload tests (default: {default_count})",
     )
 
     parser.add_argument(
         "-f",
         "--uploadfile",
         required=True,
-        help="Test file to upload",
+        metavar="FILE",
+        help="File to upload",
     )
 
     parser.add_argument(
         "-o",
         "--outfile",
-        help="Destination CSV file for test results",
+        metavar="CSV",
+        help="Export results to CSV file",
     )
 
     parser.add_argument(
         "-s",
         "--silent",
         action="store_true",
-        help="Disable verbose upload output",
+        help="Disable verbose output",
     )
 
     parser.add_argument(
         "-l",
         "--host",
         required=True,
-        help="FTP server for upload test",
+        help="FTP server hostname",
     )
 
     parser.add_argument(
         "-u",
         "--username",
         required=True,
-        help="FTP username for upload test",
+        help="FTP username",
     )
 
     parser.add_argument(
         "-p",
         "--password",
         required=True,
-        help="FTP password for upload test",
+        help="FTP password",
     )
 
     parser.add_argument(
         "-P",
         "--passive",
-        choices=["yes", "no"],
+        choices=("yes", "no"),
         default="no",
-        help=f"Enable FTP passive mode. Default: {tester.passive}",
+        help="Enable FTP passive mode",
     )
 
     parser.add_argument(
         "-V",
         "--version",
         action="version",
-        version=f"Program Version: {VERSION}",
+        version=f"%(prog)s {VERSION}",
     )
 
     return parser.parse_args()
 
 
-def signal_handler(sig, frame):
-    """Handle Ctrl+C."""
-
-    print("\n\nTest cancelled!\n")
-
-    tester.cleanup()
-
-    sys.exit(0)
+# ----------------------------------------------------------------------
+# Statistics
+# ----------------------------------------------------------------------
 
 
-signal.signal(signal.SIGINT, signal_handler)
+def build_statistics(results: list[float]) -> dict[str, float]:
+    """Calculate test statistics."""
+
+    return {
+        "average": statistics.mean(results),
+        "median": statistics.median(results),
+        "minimum": min(results),
+        "maximum": max(results),
+        "deviation": (
+            statistics.stdev(results)
+            if len(results) > 1
+            else 0.0
+        ),
+    }
 
 
-def get_verbose_printer(enabled):
-    """Return conditional print function."""
+# ----------------------------------------------------------------------
+# CSV Export
+# ----------------------------------------------------------------------
 
-    return print if enabled else lambda *a, **k: None
 
+def export_csv(
+    results: list[float],
+    outfile: str,
+    host: str,
+    uploadfile: str,
+    filesize_mb: float,
+    stats: dict[str, float],
+) -> None:
+    """Export test results."""
 
-def format_speed(speed):
-    """Format speed into MB/s and Mbps."""
+    csv_path = str(Path.cwd() / outfile)
 
-    return (
-        f"{round(speed * common.SPEED_MB_SEC, 2)}MB/s - "
-        f"{round(speed * common.SPEED_MBIT_SEC, 2)}Mbps"
+    headers = [
+        "Date",
+        "Server",
+        "File",
+        "Size",
+        "Min (MB/s)",
+        "Min (Mbps)",
+        "Max (MB/s)",
+        "Max (Mbps)",
+        "Average (MB/s)",
+        "Average (Mbps)",
+        "Median (MB/s)",
+        "Median (Mbps)",
+        "Deviation (MB/s)",
+        "Deviation (Mbps)",
+        "Program Version",
+    ]
+
+    values = [
+        time.strftime("%c"),
+        host,
+        uploadfile,
+        filesize_mb,
+        round(stats["minimum"] * common.SPEED_MB_SEC, 2),
+        round(stats["minimum"] * common.SPEED_MBIT_SEC, 2),
+        round(stats["maximum"] * common.SPEED_MB_SEC, 2),
+        round(stats["maximum"] * common.SPEED_MBIT_SEC, 2),
+        round(stats["average"] * common.SPEED_MB_SEC, 2),
+        round(stats["average"] * common.SPEED_MBIT_SEC, 2),
+        round(stats["median"] * common.SPEED_MB_SEC, 2),
+        round(stats["median"] * common.SPEED_MBIT_SEC, 2),
+        round(stats["deviation"] * common.SPEED_MB_SEC, 2),
+        round(stats["deviation"] * common.SPEED_MBIT_SEC, 2),
+        f"v{VERSION}",
+    ]
+
+    csv_parser.csv_parser(
+        results,
+        csv_path,
+        (headers, values),
+        filesize_mb,
     )
 
 
-def main():
-    """Run main program."""
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
 
-    options = parse_option()
+
+def main() -> int:
+    """Program entry point."""
+
+    options = parse_args()
+
+    upload_path = Path(options.uploadfile)
+
+    if not upload_path.exists():
+        print(f"ERROR: File not found: {upload_path}")
+        return 1
+
+    if not upload_path.is_file():
+        print(f"ERROR: Not a valid file: {upload_path}")
+        return 1
+
+    tester = uploadtester.UploadTester()
 
     tester.host = options.host
     tester.username = options.username
     tester.password = options.password
     tester.passive = options.passive == "yes"
-
     tester.VERBOSE = not options.silent
 
-    verboseprint = get_verbose_printer(tester.VERBOSE)
+    verbose = get_verbose_printer(tester.VERBOSE)
 
-    upload_path = Path(options.uploadfile)
+    def signal_handler(sig, frame):
+        """Handle Ctrl+C gracefully."""
 
-    filesize_bytes = upload_path.stat().st_size
-    filesize_mb = round(filesize_bytes / 1024 / 1024, 2)
+        print("\n\nTest cancelled.\n")
+        tester.cleanup()
+        sys.exit(0)
 
-    verboseprint(f"{Path(__file__).name} v{VERSION}\n")
-    verboseprint(f"FTP Host: {options.host}")
-    verboseprint(f"Username: {tester.username}")
-    verboseprint("Password: ************")
-    verboseprint(f"File: {options.uploadfile}")
-    verboseprint(f"Size: {filesize_mb}MB")
-    verboseprint(f"\nTotal Tests: {options.count}\n")
+    signal.signal(signal.SIGINT, signal_handler)
 
-    results = []
+    filesize_mb = get_file_size_mb(upload_path)
 
-    for test_num in range(1, options.count + 1):
+    verbose(f"{Path(__file__).name} v{VERSION}\n")
+    verbose(f"FTP Host: {options.host}")
+    verbose(f"Username: {options.username}")
+    verbose("Password: ********")
+    verbose(f"File: {upload_path}")
+    verbose(f"Size: {filesize_mb} MB")
+    verbose(f"\nTotal Tests: {options.count}\n")
 
-        verboseprint(f"Test #{test_num}:")
+    results: list[float] = []
 
-        result = tester.upload_file(options.uploadfile)
+    try:
+        for test_number in range(
+            1,
+            options.count + 1,
+        ):
+            verbose(f"Test #{test_number}")
 
-        results.append(result)
+            speed = tester.upload_file(upload_path)
 
-        print()
+            if speed > 0:
+                results.append(speed)
 
-        verboseprint(
-            f"\nAverage upload speed: "
-            f"{format_speed(result)}\n"
+            print()
+
+            verbose(
+                f"\nAverage upload speed: "
+                f"{format_speed(speed)}\n"
+            )
+
+        if not results:
+            print("No successful uploads recorded.")
+            return 1
+
+        stats = build_statistics(results)
+
+        verbose("\nTest Results")
+        verbose("------------\n")
+
+        verbose(
+            f"Time Elapsed: "
+            f"{tester.overall_time_elapsed:.2f} seconds\n"
         )
 
-    if not results:
-        print("No upload results available.")
-        return 1
-
-    overall_speed = statistics.mean(results)
-    median_speed = statistics.median(results)
-
-    deviation = (
-        statistics.stdev(results)
-        if len(results) > 1
-        else 0
-    )
-
-    min_speed = min(results)
-    max_speed = max(results)
-
-    verboseprint("\nTest Results:")
-    verboseprint("---- -------\n")
-
-    verboseprint(
-        f"Time Elapsed: "
-        f"{tester.overall_time_elapsed} seconds\n"
-    )
-
-    verboseprint(
-        f"Overall Average upload speed: "
-        f"{format_speed(overall_speed)}"
-    )
-
-    verboseprint(
-        f"Maximum upload speed: "
-        f"{format_speed(max_speed)}"
-    )
-
-    verboseprint(
-        f"Minimum upload speed: "
-        f"{format_speed(min_speed)}"
-    )
-
-    verboseprint(
-        f"Median upload speed: "
-        f"{format_speed(median_speed)}"
-    )
-
-    verboseprint(
-        f"Standard Deviation: "
-        f"{format_speed(deviation)}\n"
-    )
-
-    if options.outfile:
-
-        csv_file = os.path.join(
-            os.getcwd(),
-            options.outfile,
+        verbose(
+            f"Average Speed: "
+            f"{format_speed(stats['average'])}"
         )
 
-        overall_headers = [
-            "Date",
-            "Server",
-            "File",
-            "Size",
-            "Min (MB/s)",
-            "Min (Mbps)",
-            "Max (MB/s)",
-            "Max (Mbps)",
-            "Average (MB/s)",
-            "Average (Mbps)",
-            "Median (MB/sec)",
-            "Median (Mbps)",
-            "Deviation (MB/sec)",
-            "Deviation (Mbps)",
-            "Program Version",
-        ]
-
-        overall_values = [
-            time.strftime("%c"),
-            options.host,
-            options.uploadfile,
-            filesize_mb,
-            round(min_speed * common.SPEED_MB_SEC, 2),
-            round(min_speed * common.SPEED_MBIT_SEC, 2),
-            round(max_speed * common.SPEED_MB_SEC, 2),
-            round(max_speed * common.SPEED_MBIT_SEC, 2),
-            round(overall_speed * common.SPEED_MB_SEC, 2),
-            round(overall_speed * common.SPEED_MBIT_SEC, 2),
-            round(median_speed * common.SPEED_MB_SEC, 2),
-            round(median_speed * common.SPEED_MBIT_SEC, 2),
-            round(deviation * common.SPEED_MB_SEC, 2),
-            round(deviation * common.SPEED_MBIT_SEC, 2),
-            f"v{VERSION}",
-        ]
-
-        overall = (
-            overall_headers,
-            overall_values,
+        verbose(
+            f"Maximum Speed: "
+            f"{format_speed(stats['maximum'])}"
         )
 
-        csv_parser.csv_parser(
-            results,
-            csv_file,
-            overall,
-            filesize_mb,
+        verbose(
+            f"Minimum Speed: "
+            f"{format_speed(stats['minimum'])}"
         )
 
-    tester.cleanup()
+        verbose(
+            f"Median Speed: "
+            f"{format_speed(stats['median'])}"
+        )
+
+        verbose(
+            f"Standard Deviation: "
+            f"{format_speed(stats['deviation'])}\n"
+        )
+
+        if options.outfile:
+            export_csv(
+                results=results,
+                outfile=options.outfile,
+                host=options.host,
+                uploadfile=str(upload_path),
+                filesize_mb=filesize_mb,
+                stats=stats,
+            )
+
+    finally:
+        tester.cleanup()
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
