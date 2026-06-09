@@ -1,58 +1,100 @@
 #!/usr/bin/env python3
-# encoding: utf-8
+# -*- coding: utf-8 -*-
 
 """
-.. codeauthor:: Juan Luis Baptiste <juan.baptiste@gmail.com>
+FTP Upload Speed Tester
+
+Author:
+    Juan Luis Baptiste <juan.baptiste@gmail.com>
+
+Refactored and optimized version.
 """
+
+from __future__ import annotations
 
 import errno
 import ftplib
-import os
 import sys
 import time
 from pathlib import Path
 from socket import error as SocketError
+from typing import Optional
 
 import common
 
 
 class UploadTester:
-    """Class to perform upload speed tests."""
+    """Perform FTP upload speed tests."""
 
-    DEFAULT_UPLOAD_COUNT = 1
-    VERBOSE = True
+    DEFAULT_UPLOAD_COUNT: int = 1
+    VERBOSE: bool = True
 
-    def __init__(self):
-        self.host = ""
-        self.username = ""
-        self.password = ""
-        self.passive = False
-        self.current_dir = "/"
-        self.overall_time_elapsed = 0
+    FTP_PORT: int = 21
+    CHUNK_SIZE: int = 8192
+    PROGRESS_BAR_WIDTH: int = 50
+    CONNECTION_TIMEOUT: int = 30
 
-        self._size_written = 0
-        self._filesize = 0
-        self._filename = ""
-        self._start = 0.0
+    def __init__(self) -> None:
+        self.host: str = ""
+        self.username: str = ""
+        self.password: str = ""
+        self.passive: bool = False
+        self.current_dir: str = "/"
 
-        self._ftp = ftplib.FTP()
+        self.overall_time_elapsed: float = 0.0
 
-    def cleanup(self):
-        """Cleanup after test ends or it is cancelled."""
+        self._size_written: int = 0
+        self._filesize: int = 0
+        self._filename: str = ""
+        self._start_time: float = 0.0
+
+        self._ftp = ftplib.FTP(timeout=self.CONNECTION_TIMEOUT)
+
+    # ------------------------------------------------------------------
+    # Connection Management
+    # ------------------------------------------------------------------
+
+    def connect(self) -> None:
+        """Connect and authenticate to the FTP server."""
+
+        self._ftp.connect(self.host, self.FTP_PORT)
+
+        try:
+            self._ftp.login(self.username, self.password)
+        except ftplib.error_perm as exc:
+            if "530" in str(exc):
+                raise RuntimeError(
+                    "Bad FTP username or password."
+                ) from exc
+            raise
+
+        self._ftp.set_pasv(self.passive)
+        self._ftp.cwd(self.current_dir)
+
+    def cleanup(self) -> None:
+        """Clean up FTP session and uploaded test file."""
 
         try:
             if self._filename:
-                self._ftp.delete(self._filename)
+                try:
+                    self._ftp.delete(self._filename)
+                except (
+                    ftplib.error_perm,
+                    ftplib.error_temp,
+                    ftplib.error_reply,
+                    OSError,
+                ):
+                    pass
 
-            self._ftp.quit()
-
-        except (
-            ftplib.error_temp,
-            ftplib.error_perm,
-            ftplib.error_reply,
-            OSError,
-        ):
-            pass
+            try:
+                self._ftp.quit()
+            except (
+                ftplib.error_perm,
+                ftplib.error_temp,
+                ftplib.error_reply,
+                OSError,
+            ):
+                pass
 
         finally:
             try:
@@ -60,115 +102,132 @@ class UploadTester:
             except Exception:
                 pass
 
-    def connect(self):
-        """Connect and authenticate to FTP server."""
+    # ------------------------------------------------------------------
+    # Upload Logic
+    # ------------------------------------------------------------------
 
-        self._ftp.connect(self.host, 21)
-
-        try:
-            self._ftp.login(self.username, self.password)
-
-        except ftplib.error_perm as exc:
-            error_message = str(exc)
-
-            if "530" in error_message:
-                print("ERROR: Bad username or password.\n")
-                sys.exit(1)
-
-            raise
-
-        self._ftp.set_pasv(self.passive)
-        self._ftp.cwd(self.current_dir)
-
-    def upload_file(self, upload_file):
+    def upload_file(self, upload_file: str | Path) -> float:
         """
-        Upload file to FTP server and return upload speed.
+        Upload a file and return average upload speed in bytes/sec.
 
-        Arguments:
-        upload_file -- File path to upload
+        Args:
+            upload_file: Path to file.
+
+        Returns:
+            Upload speed in bytes per second.
         """
 
-        chunk_size = 8192
+        file_path = Path(upload_file)
+
+        if not file_path.exists():
+            raise FileNotFoundError(file_path)
+
+        if not file_path.is_file():
+            raise ValueError(f"Not a valid file: {file_path}")
+
+        self._filename = file_path.name
+        self._filesize = file_path.stat().st_size
         self._size_written = 0
 
-        upload_path = Path(upload_file)
-
-        self._filename = upload_path.name
-        self._filesize = upload_path.stat().st_size
+        if self._filesize <= 0:
+            return 0.0
 
         self.connect()
 
-        self._start = time.time()
+        self._start_time = time.perf_counter()
 
         try:
-            with upload_path.open("rb") as file:
+            with file_path.open("rb") as file_handle:
                 self._ftp.storbinary(
                     f"STOR {self._filename}",
-                    file,
-                    blocksize=chunk_size,
+                    file_handle,
+                    blocksize=self.CHUNK_SIZE,
                     callback=self.print_progress,
                 )
 
         except SocketError as exc:
-            if exc.errno != errno.ECONNRESET:
-                raise
-
-            print("ERROR: Connection reset, retrying upload...")
-            return 0
+            if exc.errno == errno.ECONNRESET:
+                print(
+                    "\nERROR: Connection reset by remote host. "
+                    "Retrying upload..."
+                )
+                return 0.0
+            raise
 
         finally:
             self.overall_time_elapsed = round(
-                time.time() - self._start,
+                time.perf_counter() - self._start_time,
                 2,
             )
 
         if self.overall_time_elapsed <= 0:
-            return 0
+            return 0.0
 
-        upload_speed = (
-            self._filesize / self.overall_time_elapsed
+        if self.VERBOSE:
+            print()
+
+        return (
+            self._filesize
+            / self.overall_time_elapsed
         )
 
-        return upload_speed
+    # ------------------------------------------------------------------
+    # Progress Reporting
+    # ------------------------------------------------------------------
 
-    def print_progress(self, chunk):
+    def print_progress(self, chunk: bytes) -> None:
         """
-        Print upload progress.
+        FTP upload callback.
 
-        Arguments:
-        chunk -- Uploaded data chunk
+        Args:
+            chunk: Uploaded chunk.
         """
 
-        self._size_written += len(chunk)
+        chunk_size = len(chunk)
+        self._size_written += chunk_size
 
         if self._filesize <= 0:
             return
 
-        done = int(
-            50 * self._size_written / self._filesize
-        )
+        elapsed = time.perf_counter() - self._start_time
 
-        time_elapsed = time.time() - self._start
-
-        if time_elapsed <= 0:
+        if elapsed <= 0:
             return
 
-        upload_speed = self._size_written / time_elapsed
+        uploaded = self._size_written
 
-        avg_speed_mb = upload_speed / 1_000_000
-        avg_speed_mbps = (
+        progress = min(
+            uploaded / self._filesize,
+            1.0,
+        )
+
+        completed = int(
+            progress * self.PROGRESS_BAR_WIDTH
+        )
+
+        upload_speed = uploaded / elapsed
+
+        speed_mb_s = upload_speed / 1_000_000
+        speed_mbps = (
             upload_speed * common.SPEED_MBIT_SEC
         )
 
-        if self.VERBOSE:
-            sys.stdout.write(
-                "\r[%s%s] %s MB/s - %s Mbps"
-                % (
-                    "=" * done,
-                    " " * (50 - done),
-                    round(avg_speed_mb, 2),
-                    round(avg_speed_mbps, 2),
-                )
-            )
+        if not self.VERBOSE:
+            return
 
-            sys.stdout.flush()
+        progress_bar = (
+            "=" * completed
+            + " "
+            * (
+                self.PROGRESS_BAR_WIDTH
+                - completed
+            )
+        )
+
+        sys.stdout.write(
+            f"\r[{progress_bar}] "
+            f"{speed_mb_s:.2f} MB/s - "
+            f"{speed_mbps:.2f} Mbps"
+        )
+
+        sys.stdout.flush()
