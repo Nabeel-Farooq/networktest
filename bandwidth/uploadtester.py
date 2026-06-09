@@ -4,9 +4,6 @@
 """
 FTP Upload Speed Tester
 
-Author:
-    Juan Luis Baptiste <juan.baptiste@gmail.com>
-
 Refactored and optimized version.
 """
 
